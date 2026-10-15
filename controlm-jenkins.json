@@ -1,0 +1,39 @@
+{
+    "FDS_Jenkins": {
+        "Type": "Folder",
+        "ControlmServer": "IN01",
+        "SiteStandard": "FDS",
+        "Application": "FDS",
+        "SubApplication": "Jenkins",
+        "BusinessFields": [
+            {
+                "Partner code": "FDS"
+            }
+        ],
+        "FDS_Deploy_Backend": {
+            "Type": "Job:Jenkins",
+            "Host": "fds-hijjawi",
+            "ConnectionProfile": "FDS_JENKINS",
+            "Pipeline Name": "backend-cicd-v2",
+            "Add Parameters": "unchecked",
+            "Add Branch Name": "unchecked",
+            "Fetch Console Logs": "checked",
+            "Status Polling Frequency": "20",
+            "Failure Tolerance": "2"
+        },
+        "FDS_Verify_Backend": {
+            "Type": "Job:Command",
+            "Host": "fds-hijjawi",
+            "RunAs": "hijjawi10",
+            "Description": "Verify deployed backend health and version",
+            "Command": "python3 -c 'import json, urllib.request; data=json.load(urllib.request.urlopen(\"http://127.0.0.1:8001/health\", timeout=5)); assert data[\"status\"]==\"ok\", data; assert data[\"version\"]==\"1.0.1\", data; print(\"Backend verified:\", data)'"
+        },
+        "FDS_Deploy_Then_Verify": {
+            "Type": "Flow",
+            "Sequence": [
+                "FDS_Deploy_Backend",
+                "FDS_Verify_Backend"
+            ]
+        }
+    }
+}
