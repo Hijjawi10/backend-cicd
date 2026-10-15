@@ -9,4 +9,4 @@ def test_health():
 
     assert response.status_code == 200
     assert response.json()["status"] == "ok"
-    assert response.json()["version"] == "1.0.0"
+    assert response.json()["version"] == "1.0.1"
