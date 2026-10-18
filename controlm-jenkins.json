@@ -13,6 +13,8 @@
         "FDS_Deploy_Backend": {
             "Type": "Job:Jenkins",
             "Host": "fds-hijjawi",
+            "Application": "FDS",
+            "SubApplication": "Jenkins",
             "ConnectionProfile": "FDS_JENKINS",
             "Pipeline Name": "backend-cicd-v2",
             "Add Parameters": "unchecked",
@@ -25,8 +27,49 @@
             "Type": "Job:Command",
             "Host": "fds-hijjawi",
             "RunAs": "hijjawi10",
+            "Application": "FDS",
+            "SubApplication": "Jenkins",
             "Description": "Verify deployed backend health and version",
-            "Command": "python3 -c 'import json, urllib.request; data=json.load(urllib.request.urlopen(\"http://127.0.0.1:8001/health\", timeout=5)); assert data[\"status\"]==\"ok\", data; assert data[\"version\"]==\"1.0.1\", data; print(\"Backend verified:\", data)'"
+            "Command": "python3 -c 'import json, urllib.request; data=json.load(urllib.request.urlopen(\"http://127.0.0.1:8001/health\", timeout=5)); assert data[\"status\"]==\"ok\", data; assert data[\"version\"]==\"1.1.0\", data; print(\"Backend verified:\", data)'"
+        },
+        "FDS_Backend_SLA": {
+            "Type": "Job:SLAManagement",
+            "Application": "FDS",
+            "SubApplication": "Jenkins",
+            "Host": "fds-hijjawi",
+            "RunAs": "hijjawi10",
+            "ServiceName": "FDS_Backend_Deployment",
+            "ServicePriority": "2",
+            "JobRunsDeviationsTolerance": "2",
+            "CompleteIn": {
+                "Time": "00:05"
+            },
+            "ServiceActions": {
+                "FDS_If_Expected_Late": {
+                    "Type": "If:SLA:ServiceIsLate",
+                    "FDS_Notify_Expected_Late": {
+                        "Type": "Action:SLA:Notify",
+                        "Severity": "Urgent",
+                        "Message": "FDS Backend deployment is expected to miss its SLA."
+                    }
+                },
+                "FDS_If_Deadline_Passed": {
+                    "Type": "If:SLA:ServiceLatePastDeadline",
+                    "FDS_Notify_Deadline_Passed": {
+                        "Type": "Action:SLA:Notify",
+                        "Severity": "VeryUrgent",
+                        "Message": "FDS Backend deployment exceeded its 5 minute SLA."
+                    }
+                },
+                "FDS_If_Job_Failed": {
+                    "Type": "If:SLA:JobFailureOnServicePath",
+                    "FDS_Notify_Job_Failed": {
+                        "Type": "Action:SLA:Notify",
+                        "Severity": "Urgent",
+                        "Message": "FDS Backend deployment has a failed job on its SLA path."
+                    }
+                }
+            }
         },
         "FDS_Collect_Logs": {
             "Type": "Job:Command",
@@ -41,7 +84,8 @@
             "Type": "Flow",
             "Sequence": [
                 "FDS_Deploy_Backend",
-                "FDS_Verify_Backend"
+                "FDS_Verify_Backend",
+                "FDS_Backend_SLA"
             ]
         }
     }
