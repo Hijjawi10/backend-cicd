@@ -28,6 +28,15 @@
             "Description": "Verify deployed backend health and version",
             "Command": "python3 -c 'import json, urllib.request; data=json.load(urllib.request.urlopen(\"http://127.0.0.1:8001/health\", timeout=5)); assert data[\"status\"]==\"ok\", data; assert data[\"version\"]==\"1.0.1\", data; print(\"Backend verified:\", data)'"
         },
+        "FDS_Collect_Logs": {
+            "Type": "Job:Command",
+            "Host": "fds-hijjawi",
+            "RunAs": "hijjawi10",
+            "Application": "FDS",
+            "SubApplication": "Jenkins",
+            "Description": "Collect workflow logs on success failure or timeout",
+            "Command": "python3 /home/hijjawi10/Desktop/backend-cicd/collect_workflow_logs.py --folder-id 'IN01:%%$SMART_ORDERID' --timeout-minutes 15"
+        },
         "FDS_Deploy_Then_Verify": {
             "Type": "Flow",
             "Sequence": [
