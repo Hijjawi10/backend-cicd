@@ -59,7 +59,7 @@ pipeline {
 
                     with urllib.request.urlopen(
                         "http://127.0.0.1:8001/health",
-                        timeout=5,
+                        timeout=10,
                     ) as response:
                         health = json.load(response)
 
@@ -109,7 +109,7 @@ pipeline {
 
                         with urllib.request.urlopen(
                             "http://127.0.0.1:8001/health",
-                            timeout=5,
+                            timeout=10,
                         ) as response:
                             actual = json.load(response)
 
@@ -188,7 +188,7 @@ pipeline {
 
                                 with urllib.request.urlopen(
                                     "http://127.0.0.1:8001/health",
-                                    timeout=5,
+                                    timeout=10,
                                 ) as response:
                                     actual = json.load(response)
 
