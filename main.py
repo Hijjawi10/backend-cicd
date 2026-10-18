@@ -87,3 +87,43 @@ def create_product(product: ProductCreate):
         }
 
     return new_product
+
+@app.get("/get_products_by_name/{products_name}")
+def get_products_by_name(products_name: str):
+    with database() as connection:
+        rows = connection.execute(
+            "SELECT id, name, price FROM products WHERE name = ?",
+            (products_name,)
+        ).fetchall()
+
+    if not rows:
+        raise HTTPException(status_code=404, detail="Product not found")
+
+    return {"products": [dict(row) for row in rows]}
+
+@app.get("/get_products_by_price/{products_price}")
+def get_products_by_price(products_price: float):
+    with database() as connection:
+        rows = connection.execute(
+            "SELECT id, name, price FROM products WHERE price = ?",
+            (products_price,)
+        ).fetchall()
+
+    if not rows:
+        raise HTTPException(status_code=404, detail="Product not found")
+
+    return {"products": [dict(row) for row in rows]}
+
+@app.delete("/products/{product_id}", status_code=204)
+def delete_product(product_id: int):
+    with database() as connection:
+        cursor = connection.execute(
+            "DELETE FROM products WHERE id = ?",
+            (product_id,)
+        )
+
+        if cursor.rowcount == 0:
+            raise HTTPException(
+                status_code=404,
+                detail="Product not found"
+            )

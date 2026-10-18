@@ -83,3 +83,86 @@ def test_product_persists_across_clients(client):
 
     assert response.status_code == 200
     assert response.json() == created
+
+def test_get_products_by_name(client):
+    first = client.post(
+        "/products",
+        json={"name": "Keyboard", "price": 25}
+    ).json()
+
+    second = client.post(
+        "/products",
+        json={"name": "Keyboard", "price": 40}
+    ).json()
+
+    client.post(
+        "/products",
+        json={"name": "Mouse", "price": 10}
+    )
+
+    response = client.get("/get_products_by_name/Keyboard")
+
+    assert response.status_code == 200
+    products = response.json()["products"]
+    assert {p["id"] for p in products} == {first["id"], second["id"]}
+
+
+def test_name_not_found(client):
+    response = client.get("/get_products_by_name/Unknown")
+
+    assert response.status_code == 404
+
+
+def test_get_products_by_price(client):
+    first = client.post(
+        "/products",
+        json={"name": "Keyboard", "price": 25}
+    ).json()
+
+    second = client.post(
+        "/products",
+        json={"name": "Mouse", "price": 25}
+    ).json()
+
+    client.post(
+        "/products",
+        json={"name": "Monitor", "price": 150}
+    )
+
+    response = client.get("/get_products_by_price/25")
+
+    assert response.status_code == 200
+    products = response.json()["products"]
+    assert {p["id"] for p in products} == {first["id"], second["id"]}
+
+
+def test_price_not_found(client):
+    response = client.get("/get_products_by_price/999")
+
+    assert response.status_code == 404
+
+
+def test_price_must_be_number(client):
+    response = client.get("/get_products_by_price/abc")
+
+    assert response.status_code == 422
+
+def test_delete_product(client):
+    created = client.post(
+        "/products",
+        json={"name": "Keyboard", "price": 25}
+    ).json()
+
+    response = client.delete(f"/products/{created['id']}")
+
+    assert response.status_code == 204
+    assert response.content == b""
+
+    check = client.get(f"/products/{created['id']}")
+    assert check.status_code == 404
+
+
+def test_delete_product_not_found(client):
+    response = client.delete("/products/999999")
+
+    assert response.status_code == 404
