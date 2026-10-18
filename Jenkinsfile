@@ -8,7 +8,6 @@ pipeline {
 
     environment {
         DEPLOY_DIR = '/opt/backend-cicd'
-        DEPLOY_STARTED = 'false'
     }
 
     stages {
@@ -79,12 +78,11 @@ pipeline {
 
         stage('Deploy') {
             steps {
-                script {
-                    env.DEPLOY_STARTED = 'true'
-                }
-
                 sh '''
                     set -eu
+
+                    # Mark deployment before changing application files.
+                    touch "$ROLLBACK_DIR/deploy-started"
 
                     cp main.py requirements.txt "$DEPLOY_DIR/"
 
@@ -102,7 +100,7 @@ pipeline {
                     sleep(time: 2, unit: 'SECONDS')
 
                     sh '''
-                        python3 - <<'PY'
+                        .venv/bin/python - <<'PY'
                         import json
                         import urllib.request
                         from main import health
@@ -136,7 +134,9 @@ pipeline {
 
         unsuccessful {
             script {
-                if (env.DEPLOY_STARTED == 'true') {
+                if (env.ROLLBACK_DIR &&
+                    fileExists("${env.ROLLBACK_DIR}/deploy-started")) {
+
                     echo 'Deployment unsuccessful. Starting rollback.'
 
                     timeout(time: 5, unit: 'MINUTES') {
@@ -145,9 +145,10 @@ pipeline {
 
                             test -f "$ROLLBACK_DIR/main.py"
                             test -f "$ROLLBACK_DIR/requirements.txt"
+                            test -f "$ROLLBACK_DIR/health.json"
                             test -d "$ROLLBACK_DIR/.venv"
 
-                            # Prepare the environment before restoring it.
+                            # Prepare the previous Python environment.
                             RESTORE_DIR="$DEPLOY_DIR/.venv-restore-$BUILD_NUMBER"
 
                             test ! -e "$RESTORE_DIR"
@@ -182,6 +183,7 @@ pipeline {
                                     Path(os.environ["ROLLBACK_DIR"])
                                     / "health.json"
                                 )
+
                                 expected = json.loads(
                                     source.read_text(encoding="utf-8")
                                 )
