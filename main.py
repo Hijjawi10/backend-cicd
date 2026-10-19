@@ -5,6 +5,9 @@ from pathlib import Path
 from fastapi import FastAPI, HTTPException, Query
 from pydantic import BaseModel, Field
 
+
+# Test deployment after merging into development
+
 app = FastAPI()
 
 DB_PATH = Path(__file__).resolve().parent / "products.db"
