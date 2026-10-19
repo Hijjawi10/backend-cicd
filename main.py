@@ -6,6 +6,8 @@ from fastapi import FastAPI, HTTPException, Query, Response
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 
+app = FastAPI()
+
 DB_PATH = Path(__file__).resolve().parent / "products.db"
 
 
