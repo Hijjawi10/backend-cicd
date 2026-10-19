@@ -166,3 +166,95 @@ def test_delete_product_not_found(client):
     response = client.delete("/products/999999")
 
     assert response.status_code == 404
+
+def test_patch_product_preserves_other_fields(client):
+    created = client.post("/products", json={
+        "name": "Keyboard",
+        "price": 25,
+        "category": "Electronics",
+        "stock": 10
+    }).json()
+
+    response = client.patch(
+        f"/products/{created['id']}",
+        json={"price": 30}
+    )
+
+    assert response.status_code == 200
+    assert response.json() == {**created, "price": 30}
+
+    saved = client.get(f"/products/{created['id']}")
+    assert saved.json() == response.json()
+
+
+def test_reject_empty_or_null_patch(client):
+    created = client.post(
+        "/products",
+        json={"name": "Mouse", "price": 10}
+    ).json()
+
+    url = f"/products/{created['id']}"
+
+    assert client.patch(url, json={}).status_code == 422
+    assert client.patch(url, json={"name": None}).status_code == 422
+    assert client.get(url).json() == created
+
+
+def test_low_stock(client):
+    low = client.post("/products", json={
+        "name": "Mouse", "price": 10, "stock": 2
+    }).json()
+
+    client.post("/products", json={
+        "name": "Keyboard", "price": 25, "stock": 5
+    })
+
+    response = client.get("/products/low-stock?threshold=5")
+
+    assert response.status_code == 200
+    assert response.json()["products"] == [low]
+
+
+def test_categories_and_category_report(client):
+    for product in [
+        {
+            "name": "Keyboard",
+            "price": 25,
+            "stock": 2,
+            "category": "Electronics"
+        },
+        {
+            "name": "Mouse",
+            "price": 10,
+            "stock": 3,
+            "category": "Electronics"
+        },
+        {
+            "name": "Chair",
+            "price": 100,
+            "stock": 1,
+            "category": "Furniture"
+        }
+    ]:
+        assert client.post("/products", json=product).status_code == 201
+
+    assert client.get("/categories").json() == {
+        "categories": ["Electronics", "Furniture"]
+    }
+
+    response = client.get("/reports/categories")
+    assert response.status_code == 200
+    assert response.json()["categories"] == [
+        {
+            "category": "Electronics",
+            "total_products": 2,
+            "total_stock": 5,
+            "inventory_value": 80
+        },
+        {
+            "category": "Furniture",
+            "total_products": 1,
+            "total_stock": 1,
+            "inventory_value": 100
+        }
+    ]
