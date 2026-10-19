@@ -32,6 +32,15 @@
             "Description": "Verify deployed backend health and version",
             "Command": "python3 -c 'import json, urllib.request; data=json.load(urllib.request.urlopen(\"http://127.0.0.1:8001/health\", timeout=5)); assert data[\"status\"]==\"ok\", data; assert data[\"version\"]==\"1.1.0\", data; print(\"Backend verified:\", data)'"
         },
+        "FDS_Backup_DB": {
+            "Type": "Job:Command",
+            "Host": "fds-hijjawi",
+            "RunAs": "hijjawi10",
+            "Application": "FDS",
+            "SubApplication": "Jenkins",
+            "Description": "Backup SQLite and validate backup integrity",
+            "Command": "python3 /home/hijjawi10/Desktop/backend-cicd/backup_database.py --run-id '%%$SMART_ORDERID'"
+        },
         "FDS_Backend_SLA": {
             "Type": "Job:SLAManagement",
             "Application": "FDS",
@@ -83,6 +92,7 @@
         "FDS_Deploy_Then_Verify": {
             "Type": "Flow",
             "Sequence": [
+                "FDS_Backup_DB",
                 "FDS_Deploy_Backend",
                 "FDS_Verify_Backend",
                 "FDS_Backend_SLA"
