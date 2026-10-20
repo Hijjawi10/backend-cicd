@@ -63,6 +63,27 @@ def initialize_database():
                 CHECK (stock >= 0)
             """)
 
+        connection.execute("""
+            CREATE TABLE IF NOT EXISTS stock_adjustments (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                product_id INTEGER NOT NULL,
+                product_name TEXT NOT NULL,
+                quantity_change INTEGER NOT NULL
+                    CHECK (quantity_change != 0),
+                previous_stock INTEGER NOT NULL,
+                new_stock INTEGER NOT NULL CHECK (new_stock >= 0),
+                reason TEXT NOT NULL,
+                created_at TEXT NOT NULL DEFAULT (
+                    strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+                )
+            )
+        """)
+
+        connection.execute("""
+            CREATE INDEX IF NOT EXISTS idx_stock_adjustments_product
+            ON stock_adjustments(product_id, id)
+        """)
+
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -394,3 +415,169 @@ def get_products_by_price(products_price: float):
         raise HTTPException(status_code=404, detail="Product not found")
 
     return {"products": [dict(row) for row in rows]}
+
+
+class StockAdjustmentCreate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    quantity_change: int = Field(
+        strict=True,
+        ge=-1_000_000,
+        le=1_000_000,
+    )
+    reason: str = Field(min_length=1, max_length=500)
+
+    @field_validator("quantity_change")
+    @classmethod
+    def reject_zero(cls, value):
+        if value == 0:
+            raise ValueError("quantity_change must not be zero")
+        return value
+
+    @field_validator("reason", mode="before")
+    @classmethod
+    def trim_reason(cls, value):
+        return value.strip() if isinstance(value, str) else value
+
+
+@app.post(
+    "/inventory/products/{product_id}/adjustments",
+    status_code=201,
+)
+def adjust_product_stock(
+    product_id: int,
+    adjustment: StockAdjustmentCreate,
+):
+    with database() as connection:
+        connection.execute("BEGIN IMMEDIATE")
+
+        product = find_product(connection, product_id)
+
+        previous_stock = product["stock"]
+        new_stock = previous_stock + adjustment.quantity_change
+
+        if new_stock < 0:
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "message": "Insufficient stock",
+                    "available_stock": previous_stock,
+                    "quantity_change": adjustment.quantity_change,
+                },
+            )
+
+        # الحد الأقصى لقيمة INTEGER في SQLite.
+        if new_stock > 9_223_372_036_854_775_807:
+            raise HTTPException(
+                status_code=422,
+                detail="Stock exceeds the database integer limit",
+            )
+
+        connection.execute(
+            "UPDATE products SET stock = ? WHERE id = ?",
+            (new_stock, product_id),
+        )
+
+        cursor = connection.execute(
+            """
+            INSERT INTO stock_adjustments (
+                product_id,
+                product_name,
+                quantity_change,
+                previous_stock,
+                new_stock,
+                reason
+            )
+            VALUES (?, ?, ?, ?, ?, ?)
+            """,
+            (
+                product_id,
+                product["name"],
+                adjustment.quantity_change,
+                previous_stock,
+                new_stock,
+                adjustment.reason,
+            ),
+        )
+
+        movement = connection.execute(
+            "SELECT * FROM stock_adjustments WHERE id = ?",
+            (cursor.lastrowid,),
+        ).fetchone()
+
+        return {
+            "product": find_product(connection, product_id),
+            "adjustment": dict(movement),
+        }
+
+
+@app.get("/inventory/adjustments")
+def get_stock_adjustments(
+    product_id: int | None = Query(default=None, ge=1),
+    limit: int = Query(default=100, ge=1, le=500),
+    offset: int = Query(default=0, ge=0),
+):
+    sql = "SELECT * FROM stock_adjustments"
+    parameters = []
+
+    if product_id is not None:
+        sql += " WHERE product_id = ?"
+        parameters.append(product_id)
+
+    sql += " ORDER BY id DESC LIMIT ? OFFSET ?"
+    parameters.extend([limit, offset])
+
+    with database() as connection:
+        rows = connection.execute(sql, parameters).fetchall()
+
+    return {"adjustments": [dict(row) for row in rows]}
+
+
+@app.get("/inventory/out-of-stock")
+def get_out_of_stock_products(
+    limit: int = Query(default=100, ge=1, le=500),
+    offset: int = Query(default=0, ge=0),
+):
+    with database() as connection:
+        rows = connection.execute(
+            """
+            SELECT * FROM products
+            WHERE stock = 0
+            ORDER BY id
+            LIMIT ? OFFSET ?
+            """,
+            (limit, offset),
+        ).fetchall()
+
+    return {"products": [dict(row) for row in rows]}
+
+
+@app.get("/inventory/summary")
+def get_inventory_summary(
+    low_stock_threshold: int = Query(default=5, ge=1),
+):
+    with database() as connection:
+        row = connection.execute(
+            """
+            SELECT
+                COUNT(*) AS total_products,
+                COALESCE(SUM(stock), 0) AS total_stock,
+                COALESCE(SUM(price * stock), 0) AS inventory_value,
+                COALESCE(SUM(
+                    CASE WHEN stock = 0 THEN 1 ELSE 0 END
+                ), 0) AS out_of_stock_products,
+                COALESCE(SUM(
+                    CASE
+                        WHEN stock > 0 AND stock < ? THEN 1
+                        ELSE 0
+                    END
+                ), 0) AS low_stock_products
+            FROM products
+            """,
+            (low_stock_threshold,),
+        ).fetchone()
+
+    return {
+        **dict(row),
+        "low_stock_threshold": low_stock_threshold,
+    }
