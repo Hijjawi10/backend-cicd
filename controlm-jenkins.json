@@ -42,6 +42,25 @@
             "Description": "Backup SQLite and validate backup integrity",
             "Command": "python3 /home/hijjawi10/Desktop/backend-cicd/backup_database.py --run-id '%%$SMART_ORDERID'"
         },
+        "FDS_Airflow_Inventory_Report": {
+            "Type": "Job:Apache Airflow",
+            "Host": "fds-hijjawi",
+            "RunAs": "hijjawi10",
+            "Application": "FDS",
+            "SubApplication": "Jenkins",
+            "Description": "Run Airflow DAG to generate inventory CSV report",
+            "ConnectionProfile": "FDS_AIRFLOW",
+            "Airflow REST Version": "v2",
+            "Action": "Run DAG",
+            "DAG Name": "FDS_Inventory_Report",
+            "Parameters": "{}",
+            "Logical Date": "null",
+            "Switch to Rerun": "Never",
+            "Keep Run ID": "Never",
+            "Get Tasks Output": "checked",
+            "Status Polling Frequency": "20",
+            "Failure Tolerance": "3"
+        },
         "FDS_Backend_SLA": {
             "Type": "Job:SLAManagement",
             "Application": "FDS",
@@ -96,6 +115,7 @@
                 "FDS_Backup_DB",
                 "FDS_Deploy_Backend",
                 "FDS_Verify_Backend",
+                "FDS_Airflow_Inventory_Report",
                 "FDS_Backend_SLA"
             ]
         }
