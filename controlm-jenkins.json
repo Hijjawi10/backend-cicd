@@ -4,6 +4,7 @@
         "ControlmServer": "IN01",
         "SiteStandard": "FDS",
         "Application": "FDS",
+        "OrderMethod": "Manual",
         "SubApplication": "Jenkins",
         "BusinessFields": [
             {
