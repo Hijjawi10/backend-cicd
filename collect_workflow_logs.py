@@ -13,6 +13,7 @@ TARGETS = {
     "FDS_Backup_DB",
     "FDS_Deploy_Backend",
     "FDS_Verify_Backend",
+    "FDS_Airflow_Inventory_Report",
 }
 
 parser = argparse.ArgumentParser()
