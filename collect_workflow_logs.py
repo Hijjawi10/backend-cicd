@@ -89,6 +89,7 @@ def execute_ctm(*arguments):
     return output
 
 
+
 def fetch_jobs():
     output = execute_ctm(
         "run",
