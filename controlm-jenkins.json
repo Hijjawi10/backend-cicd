@@ -61,6 +61,20 @@
             "Status Polling Frequency": "20",
             "Failure Tolerance": "3"
         },
+        "FDS_Check_Reports_DB": {
+            "Type": "Job:Database:EmbeddedQuery",
+            "Host": "fds-hijjawi",
+            "RunAs": "FDS_POSTGRES",
+            "Application": "FDS",
+            "SubApplication": "Jenkins",
+            "Description": "Verify PostgreSQL reports database connection",
+            "ConnectionProfile": "FDS_POSTGRES",
+            "Query": "SELECT current_database() AS database_name, current_user AS connected_user, CURRENT_TIMESTAMP AS checked_at;",
+            "Autocommit": "N",
+            "OutputExecutionLog": "Y",
+            "OutputSQLOutput": "Y",
+            "SQLOutputFormat": "Text"
+        },
         "FDS_Backend_SLA": {
             "Type": "Job:SLAManagement",
             "Application": "FDS",
@@ -116,6 +130,7 @@
                 "FDS_Deploy_Backend",
                 "FDS_Verify_Backend",
                 "FDS_Airflow_Inventory_Report",
+                "FDS_Check_Reports_DB",
                 "FDS_Backend_SLA"
             ]
         }

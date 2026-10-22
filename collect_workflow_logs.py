@@ -14,6 +14,7 @@ TARGETS = {
     "FDS_Deploy_Backend",
     "FDS_Verify_Backend",
     "FDS_Airflow_Inventory_Report",
+    "FDS_Check_Reports_DB",
 }
 
 parser = argparse.ArgumentParser()
@@ -86,6 +87,7 @@ def execute_ctm(*arguments):
         raise RuntimeError(json.dumps(parsed["errors"], ensure_ascii=False))
 
     return output
+
 
 
 def fetch_jobs():
