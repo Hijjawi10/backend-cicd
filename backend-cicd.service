@@ -7,7 +7,7 @@ Type=simple
 User=jenkins
 Group=jenkins
 WorkingDirectory=/opt/backend-cicd
-ExecStart=/opt/backend-cicd/.venv/bin/python -m uvicorn main:app --host 127.0.0.1 --port 8001
+ExecStart=/opt/backend-cicd/.venv/bin/python -m uvicorn main:app --host 0.0.0.0 --port 8001
 Restart=on-failure
 RestartSec=5
 

@@ -9,7 +9,13 @@ from pathlib import Path
 
 
 PROJECT_DIR = Path(__file__).resolve().parent
-TARGETS = {"FDS_Deploy_Backend", "FDS_Verify_Backend"}
+TARGETS = {
+    "FDS_Backup_DB",
+    "FDS_Deploy_Backend",
+    "FDS_Verify_Backend",
+    "FDS_Airflow_Inventory_Report",
+    "FDS_Check_Reports_DB",
+}
 
 parser = argparse.ArgumentParser()
 parser.add_argument("--folder-id", required=True)

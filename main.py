@@ -1,25 +1,15 @@
 import sqlite3
-from contextlib import contextmanager
+from contextlib import asynccontextmanager, contextmanager
 from pathlib import Path
 
-from fastapi import FastAPI, HTTPException, Query
-from pydantic import BaseModel, Field
+from fastapi import FastAPI, HTTPException, Query, Response
+from pydantic import BaseModel, ConfigDict, Field, field_validator
+
 
 app = FastAPI()
 
 DB_PATH = Path(__file__).resolve().parent / "products.db"
 
-
-class ProductCreate(BaseModel):
-    name: str = Field(min_length=1, max_length=150)
-    price: float = Field(gt=0, allow_inf_nan=False)
-    category: str = Field(default="General", min_length=1, max_length=100)
-    description: str = Field(default="", max_length=1000)
-    stock: int = Field(default=0, ge=0)
-
-
-class StockUpdate(BaseModel):
-    stock: int = Field(ge=0)
 
 
 @contextmanager
@@ -28,6 +18,17 @@ def database():
     connection.row_factory = sqlite3.Row
 
     try:
+        yield connection
+        connection.commit()
+    except Exception:
+        connection.rollback()
+        raise
+    finally:
+        connection.close()
+
+
+def initialize_database():
+    with database() as connection:
         connection.execute("BEGIN IMMEDIATE")
 
         connection.execute("""
@@ -62,20 +63,85 @@ def database():
                 CHECK (stock >= 0)
             """)
 
-        yield connection
-        connection.commit()
+        connection.execute("""
+            CREATE TABLE IF NOT EXISTS stock_adjustments (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                product_id INTEGER NOT NULL,
+                product_name TEXT NOT NULL,
+                quantity_change INTEGER NOT NULL
+                    CHECK (quantity_change != 0),
+                previous_stock INTEGER NOT NULL,
+                new_stock INTEGER NOT NULL CHECK (new_stock >= 0),
+                reason TEXT NOT NULL,
+                created_at TEXT NOT NULL DEFAULT (
+                    strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+                )
+            )
+        """)
 
-    except Exception:
-        connection.rollback()
-        raise
-    finally:
-        connection.close()
+        connection.execute("""
+            CREATE INDEX IF NOT EXISTS idx_stock_adjustments_product
+            ON stock_adjustments(product_id, id)
+        """)
 
 
-def find_product(connection, product_id):
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    initialize_database()
+    yield
+
+
+app = FastAPI(
+    title="Products API",
+    version="1.1.0",
+    lifespan=lifespan,
+)
+
+
+
+class ProductCreate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    name: str = Field(min_length=1, max_length=150)
+    price: float = Field(gt=0, allow_inf_nan=False)
+    category: str = Field(default="General", min_length=1, max_length=100)
+    description: str = Field(default="", max_length=1000)
+    stock: int = Field(default=0, ge=0, strict=True)
+
+    @field_validator("name", "category", mode="before")
+    @classmethod
+    def trim_text(cls, value):
+        return value.strip() if isinstance(value, str) else value
+
+
+class ProductPatch(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    name: str | None = Field(default=None, min_length=1, max_length=150)
+    price: float | None = Field(default=None, gt=0, allow_inf_nan=False)
+    category: str | None = Field(
+        default=None, min_length=1, max_length=100
+    )
+    description: str | None = Field(default=None, max_length=1000)
+    stock: int | None = Field(default=None, ge=0, strict=True)
+
+    @field_validator("name", "category", mode="before")
+    @classmethod
+    def trim_text(cls, value):
+        return value.strip() if isinstance(value, str) else value
+
+
+class StockUpdate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    stock: int = Field(ge=0, strict=True)
+
+
+
+def find_product(connection, product_id: int):
     row = connection.execute(
         "SELECT * FROM products WHERE id = ?",
-        (product_id,)
+        (product_id,),
     ).fetchone()
 
     if row is None:
@@ -98,8 +164,12 @@ def health():
 def get_products(
     name: str | None = None,
     category: str | None = None,
-    min_price: float | None = Query(default=None, ge=0),
-    max_price: float | None = Query(default=None, ge=0),
+    min_price: float | None = Query(
+        default=None, ge=0, allow_inf_nan=False
+    ),
+    max_price: float | None = Query(
+        default=None, ge=0, allow_inf_nan=False
+    ),
     in_stock: bool = False,
     limit: int = Query(default=100, ge=1, le=500),
     offset: int = Query(default=0, ge=0),
@@ -111,7 +181,7 @@ def get_products(
     ):
         raise HTTPException(
             status_code=422,
-            detail="min_price must not exceed max_price"
+            detail="min_price must not exceed max_price",
         )
 
     sql = "SELECT * FROM products WHERE 1 = 1"
@@ -160,6 +230,54 @@ def get_product_stats():
     return dict(row)
 
 
+@app.get("/products/low-stock")
+def get_low_stock(
+    threshold: int = Query(default=5, ge=1),
+    limit: int = Query(default=100, ge=1, le=500),
+    offset: int = Query(default=0, ge=0),
+):
+    with database() as connection:
+        rows = connection.execute(
+            """
+            SELECT * FROM products
+            WHERE stock < ?
+            ORDER BY stock, id
+            LIMIT ? OFFSET ?
+            """,
+            (threshold, limit, offset),
+        ).fetchall()
+
+    return {"products": [dict(row) for row in rows]}
+
+
+@app.get("/categories")
+def get_categories():
+    with database() as connection:
+        rows = connection.execute(
+            "SELECT DISTINCT category FROM products ORDER BY category"
+        ).fetchall()
+
+    return {"categories": [row["category"] for row in rows]}
+
+
+@app.get("/reports/categories")
+def get_category_report():
+    with database() as connection:
+        rows = connection.execute("""
+            SELECT
+                category,
+                COUNT(*) AS total_products,
+                COALESCE(SUM(stock), 0) AS total_stock,
+                COALESCE(SUM(price * stock), 0) AS inventory_value
+            FROM products
+            GROUP BY category
+            ORDER BY category
+        """).fetchall()
+
+    return {"categories": [dict(row) for row in rows]}
+
+
+
 @app.get("/products/{product_id}")
 def get_product(product_id: int):
     with database() as connection:
@@ -181,7 +299,7 @@ def create_product(product: ProductCreate):
                 product.category,
                 product.description,
                 product.stock,
-            )
+            ),
         )
 
         return find_product(connection, cursor.lastrowid)
@@ -206,7 +324,38 @@ def update_product(product_id: int, product: ProductCreate):
                 product.description,
                 product.stock,
                 product_id,
-            )
+            ),
+        )
+
+        return find_product(connection, product_id)
+
+
+@app.patch("/products/{product_id}")
+def patch_product(product_id: int, product: ProductPatch):
+    changes = product.model_dump(exclude_unset=True)
+
+    if not changes:
+        raise HTTPException(
+            status_code=422,
+            detail="Send at least one field to update",
+        )
+
+    if any(value is None for value in changes.values()):
+        raise HTTPException(
+            status_code=422,
+            detail="Product fields cannot be null",
+        )
+
+    # Column names come only from the validated model.
+    assignments = ", ".join(f"{field} = ?" for field in changes)
+    parameters = [*changes.values(), product_id]
+
+    with database() as connection:
+        find_product(connection, product_id)
+
+        connection.execute(
+            f"UPDATE products SET {assignments} WHERE id = ?",
+            parameters,
         )
 
         return find_product(connection, product_id)
@@ -219,10 +368,25 @@ def update_stock(product_id: int, update: StockUpdate):
 
         connection.execute(
             "UPDATE products SET stock = ? WHERE id = ?",
-            (update.stock, product_id)
+            (update.stock, product_id),
         )
 
         return find_product(connection, product_id)
+
+
+@app.delete("/products/{product_id}", status_code=204)
+def delete_product(product_id: int):
+    with database() as connection:
+        cursor = connection.execute(
+            "DELETE FROM products WHERE id = ?",
+            (product_id,),
+        )
+
+        if cursor.rowcount == 0:
+            raise HTTPException(status_code=404, detail="Product not found")
+
+    return Response(status_code=204)
+
 
 
 @app.get("/get_products_by_name/{products_name}")
@@ -230,7 +394,7 @@ def get_products_by_name(products_name: str):
     with database() as connection:
         rows = connection.execute(
             "SELECT * FROM products WHERE name = ? ORDER BY id",
-            (products_name,)
+            (products_name,),
         ).fetchall()
 
     if not rows:
@@ -244,7 +408,7 @@ def get_products_by_price(products_price: float):
     with database() as connection:
         rows = connection.execute(
             "SELECT * FROM products WHERE price = ? ORDER BY id",
-            (products_price,)
+            (products_price,),
         ).fetchall()
 
     if not rows:
@@ -253,13 +417,167 @@ def get_products_by_price(products_price: float):
     return {"products": [dict(row) for row in rows]}
 
 
-@app.delete("/products/{product_id}", status_code=204)
-def delete_product(product_id: int):
+class StockAdjustmentCreate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    quantity_change: int = Field(
+        strict=True,
+        ge=-1_000_000,
+        le=1_000_000,
+    )
+    reason: str = Field(min_length=1, max_length=500)
+
+    @field_validator("quantity_change")
+    @classmethod
+    def reject_zero(cls, value):
+        if value == 0:
+            raise ValueError("quantity_change must not be zero")
+        return value
+
+    @field_validator("reason", mode="before")
+    @classmethod
+    def trim_reason(cls, value):
+        return value.strip() if isinstance(value, str) else value
+
+
+@app.post(
+    "/inventory/products/{product_id}/adjustments",
+    status_code=201,
+)
+def adjust_product_stock(
+    product_id: int,
+    adjustment: StockAdjustmentCreate,
+):
     with database() as connection:
-        cursor = connection.execute(
-            "DELETE FROM products WHERE id = ?",
-            (product_id,)
+        connection.execute("BEGIN IMMEDIATE")
+
+        product = find_product(connection, product_id)
+
+        previous_stock = product["stock"]
+        new_stock = previous_stock + adjustment.quantity_change
+
+        if new_stock < 0:
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "message": "Insufficient stock",
+                    "available_stock": previous_stock,
+                    "quantity_change": adjustment.quantity_change,
+                },
+            )
+
+        # الحد الأقصى لقيمة INTEGER في SQLite.
+        if new_stock > 9_223_372_036_854_775_807:
+            raise HTTPException(
+                status_code=422,
+                detail="Stock exceeds the database integer limit",
+            )
+
+        connection.execute(
+            "UPDATE products SET stock = ? WHERE id = ?",
+            (new_stock, product_id),
         )
 
-        if cursor.rowcount == 0:
-            raise HTTPException(status_code=404, detail="Product not found")
+        cursor = connection.execute(
+            """
+            INSERT INTO stock_adjustments (
+                product_id,
+                product_name,
+                quantity_change,
+                previous_stock,
+                new_stock,
+                reason
+            )
+            VALUES (?, ?, ?, ?, ?, ?)
+            """,
+            (
+                product_id,
+                product["name"],
+                adjustment.quantity_change,
+                previous_stock,
+                new_stock,
+                adjustment.reason,
+            ),
+        )
+
+        movement = connection.execute(
+            "SELECT * FROM stock_adjustments WHERE id = ?",
+            (cursor.lastrowid,),
+        ).fetchone()
+
+        return {
+            "product": find_product(connection, product_id),
+            "adjustment": dict(movement),
+        }
+
+
+@app.get("/inventory/adjustments")
+def get_stock_adjustments(
+    product_id: int | None = Query(default=None, ge=1),
+    limit: int = Query(default=100, ge=1, le=500),
+    offset: int = Query(default=0, ge=0),
+):
+    sql = "SELECT * FROM stock_adjustments"
+    parameters = []
+
+    if product_id is not None:
+        sql += " WHERE product_id = ?"
+        parameters.append(product_id)
+
+    sql += " ORDER BY id DESC LIMIT ? OFFSET ?"
+    parameters.extend([limit, offset])
+
+    with database() as connection:
+        rows = connection.execute(sql, parameters).fetchall()
+
+    return {"adjustments": [dict(row) for row in rows]}
+
+
+@app.get("/inventory/out-of-stock")
+def get_out_of_stock_products(
+    limit: int = Query(default=100, ge=1, le=500),
+    offset: int = Query(default=0, ge=0),
+):
+    with database() as connection:
+        rows = connection.execute(
+            """
+            SELECT * FROM products
+            WHERE stock = 0
+            ORDER BY id
+            LIMIT ? OFFSET ?
+            """,
+            (limit, offset),
+        ).fetchall()
+
+    return {"products": [dict(row) for row in rows]}
+
+
+@app.get("/inventory/summary")
+def get_inventory_summary(
+    low_stock_threshold: int = Query(default=5, ge=1),
+):
+    with database() as connection:
+        row = connection.execute(
+            """
+            SELECT
+                COUNT(*) AS total_products,
+                COALESCE(SUM(stock), 0) AS total_stock,
+                COALESCE(SUM(price * stock), 0) AS inventory_value,
+                COALESCE(SUM(
+                    CASE WHEN stock = 0 THEN 1 ELSE 0 END
+                ), 0) AS out_of_stock_products,
+                COALESCE(SUM(
+                    CASE
+                        WHEN stock > 0 AND stock < ? THEN 1
+                        ELSE 0
+                    END
+                ), 0) AS low_stock_products
+            FROM products
+            """,
+            (low_stock_threshold,),
+        ).fetchone()
+
+    return {
+        **dict(row),
+        "low_stock_threshold": low_stock_threshold,
+    }

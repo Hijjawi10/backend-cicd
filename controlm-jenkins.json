@@ -4,6 +4,7 @@
         "ControlmServer": "IN01",
         "SiteStandard": "FDS",
         "Application": "FDS",
+        "OrderMethod": "Manual",
         "SubApplication": "Jenkins",
         "BusinessFields": [
             {
@@ -31,6 +32,48 @@
             "SubApplication": "Jenkins",
             "Description": "Verify deployed backend health and version",
             "Command": "python3 -c 'import json, urllib.request; data=json.load(urllib.request.urlopen(\"http://127.0.0.1:8001/health\", timeout=5)); assert data[\"status\"]==\"ok\", data; assert data[\"version\"]==\"1.1.0\", data; print(\"Backend verified:\", data)'"
+        },
+        "FDS_Backup_DB": {
+            "Type": "Job:Command",
+            "Host": "fds-hijjawi",
+            "RunAs": "hijjawi10",
+            "Application": "FDS",
+            "SubApplication": "Jenkins",
+            "Description": "Backup SQLite and validate backup integrity",
+            "Command": "python3 /home/hijjawi10/Desktop/backend-cicd/backup_database.py --run-id '%%$SMART_ORDERID'"
+        },
+        "FDS_Airflow_Inventory_Report": {
+            "Type": "Job:Apache Airflow",
+            "Host": "fds-hijjawi",
+            "RunAs": "hijjawi10",
+            "Application": "FDS",
+            "SubApplication": "Jenkins",
+            "Description": "Run Airflow DAG to generate inventory CSV report",
+            "ConnectionProfile": "FDS_AIRFLOW",
+            "Airflow REST Version": "v2",
+            "Action": "Run DAG",
+            "DAG Name": "FDS_Inventory_Report",
+            "Parameters": "{}",
+            "Logical Date": "null",
+            "Switch to Rerun": "Never",
+            "Keep Run ID": "Never",
+            "Get Tasks Output": "checked",
+            "Status Polling Frequency": "20",
+            "Failure Tolerance": "3"
+        },
+        "FDS_Check_Reports_DB": {
+            "Type": "Job:Database:EmbeddedQuery",
+            "Host": "fds-hijjawi",
+            "RunAs": "FDS_POSTGRES",
+            "Application": "FDS",
+            "SubApplication": "Jenkins",
+            "Description": "Verify PostgreSQL reports database connection",
+            "ConnectionProfile": "FDS_POSTGRES",
+            "Query": "SELECT current_database() AS database_name, current_user AS connected_user, CURRENT_TIMESTAMP AS checked_at;",
+            "Autocommit": "N",
+            "OutputExecutionLog": "Y",
+            "OutputSQLOutput": "Y",
+            "SQLOutputFormat": "Text"
         },
         "FDS_Backend_SLA": {
             "Type": "Job:SLAManagement",
@@ -83,8 +126,11 @@
         "FDS_Deploy_Then_Verify": {
             "Type": "Flow",
             "Sequence": [
+                "FDS_Backup_DB",
                 "FDS_Deploy_Backend",
                 "FDS_Verify_Backend",
+                "FDS_Airflow_Inventory_Report",
+                "FDS_Check_Reports_DB",
                 "FDS_Backend_SLA"
             ]
         }
