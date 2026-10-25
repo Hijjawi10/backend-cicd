@@ -6,10 +6,7 @@ from fastapi import FastAPI, HTTPException, Query, Response
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 
-app = FastAPI()
-
 DB_PATH = Path(__file__).resolve().parent / "products.db"
-
 
 
 @contextmanager
@@ -98,7 +95,6 @@ app = FastAPI(
 )
 
 
-
 class ProductCreate(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -106,7 +102,7 @@ class ProductCreate(BaseModel):
     price: float = Field(gt=0, allow_inf_nan=False)
     category: str = Field(default="General", min_length=1, max_length=100)
     description: str = Field(default="", max_length=1000)
-    stock: int = Field(default=0, ge=0, strict=True)
+    stock: int = Field(default=0, ge=0, le=9_223_372_036_854_775_807, strict=True)
 
     @field_validator("name", "category", mode="before")
     @classmethod
@@ -123,7 +119,7 @@ class ProductPatch(BaseModel):
         default=None, min_length=1, max_length=100
     )
     description: str | None = Field(default=None, max_length=1000)
-    stock: int | None = Field(default=None, ge=0, strict=True)
+    stock: int | None = Field(default=None, ge=0, le=9_223_372_036_854_775_807, strict=True)
 
     @field_validator("name", "category", mode="before")
     @classmethod
@@ -134,8 +130,7 @@ class ProductPatch(BaseModel):
 class StockUpdate(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    stock: int = Field(ge=0, strict=True)
-
+    stock: int = Field(ge=0, le=9_223_372_036_854_775_807, strict=True)
 
 
 def find_product(connection, product_id: int):
@@ -147,6 +142,32 @@ def find_product(connection, product_id: int):
     if row is None:
         raise HTTPException(status_code=404, detail="Product not found")
 
+    return dict(row)
+
+
+def record_stock_adjustment(connection, product, previous_stock, reason):
+    """Save a movement in the caller's transaction; skip unchanged stock."""
+    new_stock = product["stock"]
+    if new_stock == previous_stock:
+        return None
+
+    cursor = connection.execute(
+        """
+        INSERT INTO stock_adjustments (
+            product_id, product_name, quantity_change,
+            previous_stock, new_stock, reason
+        )
+        VALUES (?, ?, ?, ?, ?, ?)
+        """,
+        (
+            product["id"], product["name"], new_stock - previous_stock,
+            previous_stock, new_stock, reason,
+        ),
+    )
+    row = connection.execute(
+        "SELECT * FROM stock_adjustments WHERE id = ?",
+        (cursor.lastrowid,),
+    ).fetchone()
     return dict(row)
 
 
@@ -277,7 +298,6 @@ def get_category_report():
     return {"categories": [dict(row) for row in rows]}
 
 
-
 @app.get("/products/{product_id}")
 def get_product(product_id: int):
     with database() as connection:
@@ -308,7 +328,8 @@ def create_product(product: ProductCreate):
 @app.put("/products/{product_id}")
 def update_product(product_id: int, product: ProductCreate):
     with database() as connection:
-        find_product(connection, product_id)
+        connection.execute("BEGIN IMMEDIATE")
+        previous = find_product(connection, product_id)
 
         connection.execute(
             """
@@ -327,7 +348,12 @@ def update_product(product_id: int, product: ProductCreate):
             ),
         )
 
-        return find_product(connection, product_id)
+        updated = find_product(connection, product_id)
+        record_stock_adjustment(
+            connection, updated, previous["stock"],
+            "Stock replaced via PUT /products/{product_id}",
+        )
+        return updated
 
 
 @app.patch("/products/{product_id}")
@@ -351,27 +377,39 @@ def patch_product(product_id: int, product: ProductPatch):
     parameters = [*changes.values(), product_id]
 
     with database() as connection:
-        find_product(connection, product_id)
+        connection.execute("BEGIN IMMEDIATE")
+        previous = find_product(connection, product_id)
 
         connection.execute(
             f"UPDATE products SET {assignments} WHERE id = ?",
             parameters,
         )
 
-        return find_product(connection, product_id)
+        updated = find_product(connection, product_id)
+        record_stock_adjustment(
+            connection, updated, previous["stock"],
+            "Stock updated via PATCH /products/{product_id}",
+        )
+        return updated
 
 
 @app.patch("/products/{product_id}/stock")
 def update_stock(product_id: int, update: StockUpdate):
     with database() as connection:
-        find_product(connection, product_id)
+        connection.execute("BEGIN IMMEDIATE")
+        previous = find_product(connection, product_id)
 
         connection.execute(
             "UPDATE products SET stock = ? WHERE id = ?",
             (update.stock, product_id),
         )
 
-        return find_product(connection, product_id)
+        updated = find_product(connection, product_id)
+        record_stock_adjustment(
+            connection, updated, previous["stock"],
+            "Stock set via PATCH /products/{product_id}/stock",
+        )
+        return updated
 
 
 @app.delete("/products/{product_id}", status_code=204)
@@ -386,7 +424,6 @@ def delete_product(product_id: int):
             raise HTTPException(status_code=404, detail="Product not found")
 
     return Response(status_code=204)
-
 
 
 @app.get("/get_products_by_name/{products_name}")
@@ -466,7 +503,6 @@ def adjust_product_stock(
                 },
             )
 
-        # الحد الأقصى لقيمة INTEGER في SQLite.
         if new_stock > 9_223_372_036_854_775_807:
             raise HTTPException(
                 status_code=422,
@@ -478,37 +514,12 @@ def adjust_product_stock(
             (new_stock, product_id),
         )
 
-        cursor = connection.execute(
-            """
-            INSERT INTO stock_adjustments (
-                product_id,
-                product_name,
-                quantity_change,
-                previous_stock,
-                new_stock,
-                reason
-            )
-            VALUES (?, ?, ?, ?, ?, ?)
-            """,
-            (
-                product_id,
-                product["name"],
-                adjustment.quantity_change,
-                previous_stock,
-                new_stock,
-                adjustment.reason,
-            ),
+        updated = find_product(connection, product_id)
+        movement = record_stock_adjustment(
+            connection, updated, previous_stock, adjustment.reason,
         )
 
-        movement = connection.execute(
-            "SELECT * FROM stock_adjustments WHERE id = ?",
-            (cursor.lastrowid,),
-        ).fetchone()
-
-        return {
-            "product": find_product(connection, product_id),
-            "adjustment": dict(movement),
-        }
+        return {"product": updated, "adjustment": movement}
 
 
 @app.get("/inventory/adjustments")
