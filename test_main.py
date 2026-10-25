@@ -544,3 +544,187 @@ def test_reject_invalid_inventory_query(client, url):
     response = client.get(url)
 
     assert response.status_code == 422
+
+# Automatic movement history for existing product update APIs.
+UPDATE_ENDPOINTS = ["put", "patch", "stock"]
+
+
+def change_stock(client, product, endpoint, stock, **changes):
+    url = f"/products/{product['id']}"
+    if endpoint == "put":
+        payload = {
+            key: product[key]
+            for key in ("name", "price", "category", "description", "stock")
+        }
+        payload.update(changes)
+        payload["stock"] = stock
+        return client.put(url, json=payload)
+    if endpoint == "patch":
+        return client.patch(url, json={**changes, "stock": stock})
+    if endpoint == "stock":
+        return client.patch(f"{url}/stock", json={"stock": stock})
+    return client.post(
+        f"/inventory/products/{product['id']}/adjustments",
+        json={"quantity_change": stock - product["stock"], "reason": "Delivery"},
+    )
+
+
+def product_history(client, product):
+    response = client.get(
+        "/inventory/adjustments", params={"product_id": product["id"]}
+    )
+    assert response.status_code == 200
+    return response.json()["adjustments"]
+
+
+@pytest.mark.parametrize("endpoint", UPDATE_ENDPOINTS)
+@pytest.mark.parametrize("new_stock", [0, 12])
+def test_existing_stock_routes_record_exactly_one_movement(client, endpoint, new_stock):
+    product = create_product(client, stock=5)
+    response = change_stock(client, product, endpoint, new_stock)
+
+    assert response.status_code == 200, response.text
+    assert client.get(f"/products/{product['id']}").json() == response.json()
+    movements = product_history(client, product)
+    assert len(movements) == 1
+    movement = movements[0]
+    assert movement["product_id"] == product["id"]
+    assert movement["product_name"] == product["name"]
+    assert movement["previous_stock"] == 5
+    assert movement["new_stock"] == new_stock
+    assert movement["quantity_change"] == new_stock - 5
+    assert movement["reason"]
+    assert movement["created_at"].endswith("Z")
+
+
+@pytest.mark.parametrize("endpoint", UPDATE_ENDPOINTS)
+def test_unchanged_stock_does_not_create_movement(client, endpoint):
+    product = create_product(client, stock=5)
+    for _ in range(2):
+        response = change_stock(client, product, endpoint, 5)
+        assert response.status_code == 200, response.text
+    assert product_history(client, product) == []
+
+
+@pytest.mark.parametrize("method", ["put", "patch"])
+def test_editing_other_fields_keeps_history_empty(client, method):
+    product = create_product(client, stock=5)
+    url = f"/products/{product['id']}"
+    if method == "put":
+        response = change_stock(client, product, "put", 5, name="New name", price=30)
+    else:
+        response = client.patch(url, json={"name": "New name", "price": 30})
+    assert response.status_code == 200
+    assert response.json()["name"] == "New name"
+    assert response.json()["stock"] == 5
+    assert product_history(client, product) == []
+
+
+@pytest.mark.parametrize("endpoint", ["put", "patch"])
+def test_movement_uses_updated_product_name(client, endpoint):
+    product = create_product(client, stock=5)
+    response = change_stock(client, product, endpoint, 8, name="Renamed product")
+    assert response.status_code == 200
+    assert product_history(client, product)[0]["product_name"] == "Renamed product"
+
+
+def test_mixed_stock_updates_produce_continuous_history(client):
+    product = create_product(client, stock=5)
+    for endpoint, stock in [("put", 12), ("patch", 8), ("stock", 0), ("adjustment", 3)]:
+        response = change_stock(client, product, endpoint, stock)
+        assert response.status_code in (200, 201), response.text
+        product = client.get(f"/products/{product['id']}").json()
+
+    movements = list(reversed(product_history(client, product)))
+    assert [(m["previous_stock"], m["new_stock"], m["quantity_change"]) for m in movements] == [
+        (5, 12, 7), (12, 8, -4), (8, 0, -8), (0, 3, 3)
+    ]
+
+
+@pytest.mark.parametrize("endpoint", [*UPDATE_ENDPOINTS, "adjustment"])
+def test_failed_history_insert_rolls_back_product_update(client, endpoint):
+    product = create_product(client, stock=5)
+    # Fail the actual SQLite insert after the product UPDATE has executed.
+    with main.database() as connection:
+        connection.execute("""
+            CREATE TRIGGER reject_movement
+            BEFORE INSERT ON stock_adjustments
+            BEGIN
+                SELECT RAISE(ABORT, 'Simulated history write failure');
+            END
+        """)
+
+    with TestClient(main.app, raise_server_exceptions=False) as failing_client:
+        metadata = {"name": "Should roll back", "price": 99} if endpoint in ("put", "patch") else {}
+        response = change_stock(failing_client, product, endpoint, 8, **metadata)
+
+    assert response.status_code == 500
+    assert client.get(f"/products/{product['id']}").json() == product
+    assert product_history(client, product) == []
+
+
+@pytest.mark.parametrize("endpoint", UPDATE_ENDPOINTS)
+@pytest.mark.parametrize("stock", [-1, 1.5, True, 9_223_372_036_854_775_808])
+def test_invalid_absolute_stock_changes_nothing(client, endpoint, stock):
+    product = create_product(client, stock=5)
+    response = change_stock(client, product, endpoint, stock)
+    assert response.status_code == 422
+    assert client.get(f"/products/{product['id']}").json() == product
+    assert product_history(client, product) == []
+
+
+@pytest.mark.parametrize("endpoint", UPDATE_ENDPOINTS)
+def test_update_missing_product_creates_no_movement(client, endpoint):
+    product = {
+        "id": 999999, "name": "Missing", "price": 25,
+        "category": "General", "description": "", "stock": 5,
+    }
+    response = change_stock(client, product, endpoint, 8)
+    assert response.status_code == 404
+    assert product_history(client, product) == []
+
+
+def test_existing_database_migration_preserves_products(tmp_path, monkeypatch):
+    import sqlite3
+
+    path = tmp_path / "legacy.db"
+    with sqlite3.connect(path) as connection:
+        connection.execute("""
+            CREATE TABLE products (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                name TEXT NOT NULL,
+                price REAL NOT NULL CHECK (price > 0)
+            )
+        """)
+        connection.execute("INSERT INTO products (name, price) VALUES ('Existing', 10)")
+    monkeypatch.setattr(main, "DB_PATH", path)
+
+    with TestClient(main.app) as legacy_client:
+        response = legacy_client.get("/products/1")
+        assert response.status_code == 200
+        product = response.json()
+        assert product["name"] == "Existing"
+        assert product["stock"] == 0
+        updated = change_stock(legacy_client, product, "stock", 4)
+        assert updated.status_code == 200
+        assert len(product_history(legacy_client, product)) == 1
+
+
+def test_concurrent_absolute_updates_keep_history_consistent(client):
+    from concurrent.futures import ThreadPoolExecutor
+
+    product = create_product(client, stock=5)
+    with ThreadPoolExecutor(max_workers=3) as executor:
+        responses = list(executor.map(
+            lambda amount: change_stock(client, product, "stock", amount),
+            [10, 20, 30],
+        ))
+    assert all(response.status_code == 200 for response in responses)
+    movements = list(reversed(product_history(client, product)))
+    assert len(movements) == 3
+    previous_stock = 5
+    for movement in movements:
+        assert movement["previous_stock"] == previous_stock
+        assert movement["quantity_change"] == movement["new_stock"] - previous_stock
+        previous_stock = movement["new_stock"]
+    assert client.get(f"/products/{product['id']}").json()["stock"] == previous_stock
