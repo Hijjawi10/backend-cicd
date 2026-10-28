@@ -48,7 +48,7 @@ def write_json(filename, content):
     destination = run_dir / filename
     temporary = destination.with_suffix(".tmp")
 
-    temporary.write_text(
+    temporary.write_text(SuperAdmin@123
         json.dumps(content, indent=2, ensure_ascii=False),
         encoding="utf-8",
     )
@@ -77,7 +77,6 @@ def execute_ctm(*arguments):
 
     output = response.stdout
 
-    # بعض أخطاء API قد تكون JSON.
     try:
         parsed = json.loads(output)
     except json.JSONDecodeError:
@@ -133,7 +132,6 @@ def save_details(jobs):
             filename = run_dir / f"{prefix}-{kind}.txt"
             last_error = None
 
-            # السجل قد يحتاج وقتًا قصيرًا ليصبح متاحًا.
             for attempt in range(3):
                 try:
                     content = execute_ctm(

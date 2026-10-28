@@ -1,3 +1,4 @@
+import os
 import sqlite3
 from contextlib import asynccontextmanager, contextmanager
 from pathlib import Path
@@ -6,7 +7,14 @@ from fastapi import FastAPI, HTTPException, Query, Response
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 
-DB_PATH = Path(__file__).resolve().parent / "products.db"
+MAX_STOCK = 9_223_372_036_854_775_807
+
+DB_PATH = Path(
+    os.environ.get(
+        "DATABASE_PATH",
+        str(Path(__file__).resolve().parent / "products.db"),
+    )
+)
 
 
 @contextmanager
@@ -102,7 +110,7 @@ class ProductCreate(BaseModel):
     price: float = Field(gt=0, allow_inf_nan=False)
     category: str = Field(default="General", min_length=1, max_length=100)
     description: str = Field(default="", max_length=1000)
-    stock: int = Field(default=0, ge=0, le=9_223_372_036_854_775_807, strict=True)
+    stock: int = Field(default=0, ge=0, le=MAX_STOCK, strict=True)
 
     @field_validator("name", "category", mode="before")
     @classmethod
@@ -116,10 +124,17 @@ class ProductPatch(BaseModel):
     name: str | None = Field(default=None, min_length=1, max_length=150)
     price: float | None = Field(default=None, gt=0, allow_inf_nan=False)
     category: str | None = Field(
-        default=None, min_length=1, max_length=100
+        default=None,
+        min_length=1,
+        max_length=100,
     )
     description: str | None = Field(default=None, max_length=1000)
-    stock: int | None = Field(default=None, ge=0, le=9_223_372_036_854_775_807, strict=True)
+    stock: int | None = Field(
+        default=None,
+        ge=0,
+        le=MAX_STOCK,
+        strict=True,
+    )
 
     @field_validator("name", "category", mode="before")
     @classmethod
@@ -130,7 +145,31 @@ class ProductPatch(BaseModel):
 class StockUpdate(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    stock: int = Field(ge=0, le=9_223_372_036_854_775_807, strict=True)
+    stock: int = Field(ge=0, le=MAX_STOCK, strict=True)
+
+
+class StockAdjustmentCreate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    quantity_change: int = Field(
+        strict=True,
+        ge=-1_000_000,
+        le=1_000_000,
+    )
+    reason: str = Field(min_length=1, max_length=500)
+
+    @field_validator("quantity_change")
+    @classmethod
+    def reject_zero(cls, value):
+        if value == 0:
+            raise ValueError("quantity_change must not be zero")
+
+        return value
+
+    @field_validator("reason", mode="before")
+    @classmethod
+    def trim_reason(cls, value):
+        return value.strip() if isinstance(value, str) else value
 
 
 def find_product(connection, product_id: int):
@@ -145,29 +184,44 @@ def find_product(connection, product_id: int):
     return dict(row)
 
 
-def record_stock_adjustment(connection, product, previous_stock, reason):
-    """Save a movement in the caller's transaction; skip unchanged stock."""
+def record_stock_adjustment(
+    connection,
+    product,
+    previous_stock,
+    reason,
+):
     new_stock = product["stock"]
+
     if new_stock == previous_stock:
         return None
 
     cursor = connection.execute(
         """
         INSERT INTO stock_adjustments (
-            product_id, product_name, quantity_change,
-            previous_stock, new_stock, reason
+            product_id,
+            product_name,
+            quantity_change,
+            previous_stock,
+            new_stock,
+            reason
         )
         VALUES (?, ?, ?, ?, ?, ?)
         """,
         (
-            product["id"], product["name"], new_stock - previous_stock,
-            previous_stock, new_stock, reason,
+            product["id"],
+            product["name"],
+            new_stock - previous_stock,
+            previous_stock,
+            new_stock,
+            reason,
         ),
     )
+
     row = connection.execute(
         "SELECT * FROM stock_adjustments WHERE id = ?",
         (cursor.lastrowid,),
     ).fetchone()
+
     return dict(row)
 
 
@@ -186,10 +240,14 @@ def get_products(
     name: str | None = None,
     category: str | None = None,
     min_price: float | None = Query(
-        default=None, ge=0, allow_inf_nan=False
+        default=None,
+        ge=0,
+        allow_inf_nan=False,
     ),
     max_price: float | None = Query(
-        default=None, ge=0, allow_inf_nan=False
+        default=None,
+        ge=0,
+        allow_inf_nan=False,
     ),
     in_stock: bool = False,
     limit: int = Query(default=100, ge=1, le=500),
@@ -309,8 +367,13 @@ def create_product(product: ProductCreate):
     with database() as connection:
         cursor = connection.execute(
             """
-            INSERT INTO products
-                (name, price, category, description, stock)
+            INSERT INTO products (
+                name,
+                price,
+                category,
+                description,
+                stock
+            )
             VALUES (?, ?, ?, ?, ?)
             """,
             (
@@ -329,13 +392,18 @@ def create_product(product: ProductCreate):
 def update_product(product_id: int, product: ProductCreate):
     with database() as connection:
         connection.execute("BEGIN IMMEDIATE")
+
         previous = find_product(connection, product_id)
 
         connection.execute(
             """
             UPDATE products
-            SET name = ?, price = ?, category = ?,
-                description = ?, stock = ?
+            SET
+                name = ?,
+                price = ?,
+                category = ?,
+                description = ?,
+                stock = ?
             WHERE id = ?
             """,
             (
@@ -349,10 +417,14 @@ def update_product(product_id: int, product: ProductCreate):
         )
 
         updated = find_product(connection, product_id)
+
         record_stock_adjustment(
-            connection, updated, previous["stock"],
+            connection,
+            updated,
+            previous["stock"],
             "Stock replaced via PUT /products/{product_id}",
         )
+
         return updated
 
 
@@ -372,12 +444,13 @@ def patch_product(product_id: int, product: ProductPatch):
             detail="Product fields cannot be null",
         )
 
-    # Column names come only from the validated model.
+    # Field names are restricted to the validated ProductPatch model.
     assignments = ", ".join(f"{field} = ?" for field in changes)
     parameters = [*changes.values(), product_id]
 
     with database() as connection:
         connection.execute("BEGIN IMMEDIATE")
+
         previous = find_product(connection, product_id)
 
         connection.execute(
@@ -386,10 +459,14 @@ def patch_product(product_id: int, product: ProductPatch):
         )
 
         updated = find_product(connection, product_id)
+
         record_stock_adjustment(
-            connection, updated, previous["stock"],
+            connection,
+            updated,
+            previous["stock"],
             "Stock updated via PATCH /products/{product_id}",
         )
+
         return updated
 
 
@@ -397,6 +474,7 @@ def patch_product(product_id: int, product: ProductPatch):
 def update_stock(product_id: int, update: StockUpdate):
     with database() as connection:
         connection.execute("BEGIN IMMEDIATE")
+
         previous = find_product(connection, product_id)
 
         connection.execute(
@@ -405,10 +483,14 @@ def update_stock(product_id: int, update: StockUpdate):
         )
 
         updated = find_product(connection, product_id)
+
         record_stock_adjustment(
-            connection, updated, previous["stock"],
+            connection,
+            updated,
+            previous["stock"],
             "Stock set via PATCH /products/{product_id}/stock",
         )
+
         return updated
 
 
@@ -421,7 +503,10 @@ def delete_product(product_id: int):
         )
 
         if cursor.rowcount == 0:
-            raise HTTPException(status_code=404, detail="Product not found")
+            raise HTTPException(
+                status_code=404,
+                detail="Product not found",
+            )
 
     return Response(status_code=204)
 
@@ -454,29 +539,6 @@ def get_products_by_price(products_price: float):
     return {"products": [dict(row) for row in rows]}
 
 
-class StockAdjustmentCreate(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    quantity_change: int = Field(
-        strict=True,
-        ge=-1_000_000,
-        le=1_000_000,
-    )
-    reason: str = Field(min_length=1, max_length=500)
-
-    @field_validator("quantity_change")
-    @classmethod
-    def reject_zero(cls, value):
-        if value == 0:
-            raise ValueError("quantity_change must not be zero")
-        return value
-
-    @field_validator("reason", mode="before")
-    @classmethod
-    def trim_reason(cls, value):
-        return value.strip() if isinstance(value, str) else value
-
-
 @app.post(
     "/inventory/products/{product_id}/adjustments",
     status_code=201,
@@ -503,7 +565,7 @@ def adjust_product_stock(
                 },
             )
 
-        if new_stock > 9_223_372_036_854_775_807:
+        if new_stock > MAX_STOCK:
             raise HTTPException(
                 status_code=422,
                 detail="Stock exceeds the database integer limit",
@@ -515,11 +577,18 @@ def adjust_product_stock(
         )
 
         updated = find_product(connection, product_id)
+
         movement = record_stock_adjustment(
-            connection, updated, previous_stock, adjustment.reason,
+            connection,
+            updated,
+            previous_stock,
+            adjustment.reason,
         )
 
-        return {"product": updated, "adjustment": movement}
+        return {
+            "product": updated,
+            "adjustment": movement,
+        }
 
 
 @app.get("/inventory/adjustments")
