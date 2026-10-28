@@ -11,3 +11,4 @@ __pycache__/
 *.db-shm
 logs/
 backups/
+rollback-*/
