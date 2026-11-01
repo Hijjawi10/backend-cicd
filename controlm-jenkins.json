@@ -39,8 +39,8 @@
             "RunAs": "hijjawi10",
             "Application": "FDS",
             "SubApplication": "Jenkins",
-            "Description": "Backup SQLite and validate backup integrity",
-            "Command": "python3 /home/hijjawi10/Desktop/backend-cicd/backup_database.py --run-id '%%$SMART_ORDERID'"
+            "Description": "Backup Docker SQLite and validate backup integrity",
+            "Command": "sg docker -c 'python3 /home/hijjawi10/Desktop/backend-cicd/backup_database.py --run-id %%$SMART_ORDERID'"
         },
         "FDS_Airflow_Inventory_Report": {
             "Type": "Job:Apache Airflow",
