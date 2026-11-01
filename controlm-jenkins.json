@@ -30,8 +30,8 @@
             "RunAs": "hijjawi10",
             "Application": "FDS",
             "SubApplication": "Jenkins",
-            "Description": "Verify deployed backend health and version",
-            "Command": "python3 -c 'import json, urllib.request; data=json.load(urllib.request.urlopen(\"http://127.0.0.1:8001/health\", timeout=5)); assert data[\"status\"]==\"ok\", data; assert data[\"version\"]==\"1.1.0\", data; print(\"Backend verified:\", data)'"
+            "Description": "Verify Docker backend health and version on port 8003",
+            "Command": "python3 -c 'import json, urllib.request; data=json.load(urllib.request.urlopen(\"http://127.0.0.1:8003/health\", timeout=10)); expected={\"status\":\"ok\",\"version\":\"1.1.0\"}; print(\"Docker backend response:\", data); data == expected or (_ for _ in ()).throw(RuntimeError(f\"Unexpected health response: {data}\")); print(\"Docker backend verified successfully\")'"
         },
         "FDS_Backup_DB": {
             "Type": "Job:Command",
